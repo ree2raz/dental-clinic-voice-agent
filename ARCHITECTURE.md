@@ -387,8 +387,6 @@
 
 
 ## Guardrail Layers Summary
-
-```
 ┌─────────────────────────────────────────────────────────────┐
 │ Layer 1: INPUT                                              │
 │ • Off-topic detection                                       │
@@ -415,6 +413,5 @@
 │ • State rollback                                            │
 │ • Recovery messaging                                        │
 └─────────────────────────────────────────────────────────────┘
-```
 
 **Philosophy**: The LLM is a constrained tool, not the controller. The state machine controls flow. The guardrails enforce constraints. The tools provide facts.
