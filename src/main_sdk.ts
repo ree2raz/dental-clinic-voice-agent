@@ -39,6 +39,101 @@ const State = {
 type StateType = typeof State[keyof typeof State];
 
 let currentState: StateType = State.DISCONNECTED;
+
+// Tool call tracking for output validation
+let toolsCalledInCurrentState: string[] = [];
+let lastToolCallTime: number = 0;
+
+// Canned responses for guardrail violations
+const cannedResponses = {
+  offTopic: "I'm here to help you with dental appointments and clinic information. How can I assist you with your dental care today?",
+  schedulingInIntake: "I'd be happy to help you schedule an appointment. First, I need to collect some information. Could you please provide your full name and the reason for your visit?",
+  hoursWithoutTool: "Let me check our availability for you. What day and time would work best for your appointment?",
+  unauthorizedClaim: "I want to make sure I give you accurate information. Let me verify that for you.",
+  interruptionRecovery: "I apologize, I didn't catch that. Could you please repeat what you were saying?",
+  invalidTransition: "I'm not able to do that right now. Let me help you with the current step."
+};
+
+// Response validation rules per state
+const stateValidationRules: Record<StateType, {
+  forbiddenPatterns: RegExp[];
+  requiredTools: string[];
+  canMentionHours: boolean;
+  canSchedule: boolean;
+}> = {
+  [State.DISCONNECTED]: {
+    forbiddenPatterns: [],
+    requiredTools: [],
+    canMentionHours: false,
+    canSchedule: false
+  },
+  [State.CONNECTING]: {
+    forbiddenPatterns: [],
+    requiredTools: [],
+    canMentionHours: false,
+    canSchedule: false
+  },
+  [State.GREETING]: {
+    forbiddenPatterns: [/open\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday|weekend)/i, /available\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday|weekend)/i],
+    requiredTools: [],
+    canMentionHours: false,
+    canSchedule: false
+  },
+  [State.COLLECT_NAME]: {
+    forbiddenPatterns: [/\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b.*\b(open|close|available)\b/i],
+    requiredTools: [],
+    canMentionHours: false,
+    canSchedule: false
+  },
+  [State.COLLECT_REASON]: {
+    forbiddenPatterns: [/\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b.*\b(open|close|available)\b/i, /book\s+(?:an?\s+)?appointment/i],
+    requiredTools: [],
+    canMentionHours: false,
+    canSchedule: false
+  },
+  [State.SAVE_INTAKE]: {
+    forbiddenPatterns: [/\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b.*\b(open|close|available)\b/i],
+    requiredTools: ['save_intake_info'],
+    canMentionHours: false,
+    canSchedule: false
+  },
+  [State.ASK_TIME]: {
+    forbiddenPatterns: [],
+    requiredTools: [],
+    canMentionHours: false,
+    canSchedule: true
+  },
+  [State.VALIDATE_HOURS]: {
+    forbiddenPatterns: [/we are open/i, /clinic is open/i, /available/i],
+    requiredTools: ['check_business_hours'],
+    canMentionHours: false,
+    canSchedule: false
+  },
+  [State.CONFIRM_SLOT]: {
+    forbiddenPatterns: [],
+    requiredTools: ['check_business_hours'],
+    canMentionHours: true,
+    canSchedule: true
+  },
+  [State.BOOK_APPOINTMENT]: {
+    forbiddenPatterns: [],
+    requiredTools: ['book_appointment'],
+    canMentionHours: true,
+    canSchedule: true
+  },
+  [State.SUMMARY]: {
+    forbiddenPatterns: [],
+    requiredTools: ['book_appointment'],
+    canMentionHours: true,
+    canSchedule: true
+  },
+  [State.CLOSING]: {
+    forbiddenPatterns: [],
+    requiredTools: [],
+    canMentionHours: true,
+    canSchedule: true
+  }
+};
 let previousState: StateType | null = null;
 let patientName: string | null = null;
 let visitReason: string | null = null;
@@ -230,6 +325,73 @@ function logRollback(from: StateType, to: StateType, reason: string) {
 function logGuardrail(type: 'INPUT' | 'OUTPUT', event: string, details?: any) {
   const detailStr = details ? ` ${JSON.stringify(details)}` : '';
   console.log(`[GUARDRAIL_${type}] ${event}${detailStr}`);
+}
+
+function validateResponse(text: string, state: StateType): { valid: boolean; violation?: string; cannedResponse?: string } {
+  const rules = stateValidationRules[state];
+  
+  if (!rules) {
+    return { valid: true };
+  }
+
+  // Check forbidden patterns
+  for (const pattern of rules.forbiddenPatterns) {
+    if (pattern.test(text)) {
+      logGuardrail('OUTPUT', 'Forbidden pattern detected', { state, pattern: pattern.toString(), text: text.slice(0, 50) });
+      return { 
+        valid: false, 
+        violation: 'forbidden_pattern',
+        cannedResponse: cannedResponses.unauthorizedClaim
+      };
+    }
+  }
+
+  // Check if mentioning hours without proper tool call
+  if (!rules.canMentionHours) {
+    const hoursPattern = /\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b.*\b(open|close|available|hours)\b/i;
+    if (hoursPattern.test(text)) {
+      const hasCheckedHours = toolsCalledInCurrentState.includes('check_business_hours');
+      if (!hasCheckedHours) {
+        logGuardrail('OUTPUT', 'Hours mentioned without tool call', { state, text: text.slice(0, 50) });
+        return { 
+          valid: false, 
+          violation: 'unauthorized_hours_claim',
+          cannedResponse: cannedResponses.hoursWithoutTool
+        };
+      }
+    }
+  }
+
+  // Check if attempting to schedule in non-scheduling state
+  if (!rules.canSchedule) {
+    const schedulingPattern = /\b(book|schedule)\b.*\b(appointment|time|slot)\b/i;
+    if (schedulingPattern.test(text)) {
+      logGuardrail('OUTPUT', 'Scheduling attempt in non-scheduling state', { state, text: text.slice(0, 50) });
+      return { 
+        valid: false, 
+        violation: 'unauthorized_scheduling',
+        cannedResponse: cannedResponses.schedulingInIntake
+      };
+    }
+  }
+
+  return { valid: true };
+}
+
+function resetToolTracking() {
+  toolsCalledInCurrentState = [];
+  lastToolCallTime = 0;
+}
+
+function recordToolCall(toolName: string) {
+  toolsCalledInCurrentState.push(toolName);
+  lastToolCallTime = Date.now();
+  logGuardrail('OUTPUT', 'Tool call recorded', { tool: toolName, state: currentState });
+}
+
+function redirectOffTopic(): string {
+  logGuardrail('INPUT', 'Off-topic redirect triggered', { state: currentState });
+  return cannedResponses.offTopic;
 }
 
 const audioWorkletCode = `
@@ -523,6 +685,9 @@ async function executeTool(name: string, args: any): Promise<string> {
   
   pendingFunctionCall = { name, args };
   
+  // Record that this tool was called for output validation
+  recordToolCall(name);
+  
   if (name === 'save_intake_info') {
     console.log(`[DB] Saved Intake Info: Name=${args.patientName}, Reason=${args.visitReason}`);
     logTool(name, 'RESULT', { patientName: args.patientName, visitReason: args.visitReason });
@@ -579,6 +744,10 @@ function transitionState(newState: StateType, reason: string) {
 
   previousState = currentState;
   currentState = newState;
+  
+  // Reset tool tracking for new state
+  resetToolTracking();
+  logGuardrail('OUTPUT', 'Tool tracking reset for new state', { state: newState });
 
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify({
@@ -621,18 +790,59 @@ function handleInterruption() {
       pendingFunctionCall = null;
     }
 
+    // Cancel any in-progress response
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({
+        type: 'response.cancel'
+      }));
+      logWebSocket('Sent', 'response.cancel', { reason: 'user_interruption' });
+    }
+
+    // Clear all audio buffers
+    audioQueue = [];
+    audioBufferQueue = [];
+    
+    // Stop any playing audio
+    if (isPlaying && playbackContext) {
+      try {
+        playbackContext.suspend();
+        logAudio('Audio context suspended due to interruption');
+      } catch (e) {
+        logAudio('Error suspending audio context', e);
+      }
+    }
+    isPlaying = false;
+    
+    logAudio('All audio buffers cleared', { 
+      audioQueueLength: 0, 
+      audioBufferQueueLength: 0 
+    });
+
+    // Rollback to previous safe state
     const rollbackState = determineRollbackState(currentState);
     if (rollbackState !== currentState) {
       logRollback(currentState, rollbackState, 'User interrupted');
       transitionState(rollbackState, 'Interruption - user cut off AI');
+      
+      // Inject recovery message
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({
+          type: 'conversation.item.create',
+          item: {
+            type: 'message',
+            role: 'assistant',
+            content: [{ type: 'input_text', text: cannedResponses.interruptionRecovery }]
+          }
+        }));
+        logWebSocket('Sent', 'conversation.item.create', { type: 'interruption_recovery' });
+        
+        ws.send(JSON.stringify({
+          type: 'response.create'
+        }));
+        logWebSocket('Sent', 'response.create', { reason: 'interruption_recovery' });
+      }
     }
   }
-
-  audioQueue = [];
-  if (isPlaying) {
-    logAudio('Stopping playback due to interruption');
-  }
-  isPlaying = false;
 }
 
 function determineRollbackState(currentState: StateType): StateType {
@@ -759,7 +969,25 @@ async function connect() {
             logGuardrail('INPUT', 'Intent classified', { intent });
 
             if (intent === 'off-topic') {
-              logGuardrail('INPUT', 'Off-topic detected', { text: content.slice(0, 50) });
+              logGuardrail('INPUT', 'Off-topic detected - injecting redirect', { text: content.slice(0, 50) });
+              
+              // Inject canned response for off-topic
+              const redirectMessage = redirectOffTopic();
+              ws!.send(JSON.stringify({
+                type: 'conversation.item.create',
+                item: {
+                  type: 'message',
+                  role: 'assistant',
+                  content: [{ type: 'input_text', text: redirectMessage }]
+                }
+              }));
+              logWebSocket('Sent', 'conversation.item.create', { type: 'off_topic_redirect' });
+              
+              // Trigger response creation
+              ws!.send(JSON.stringify({
+                type: 'response.create'
+              }));
+              logWebSocket('Sent', 'response.create', { reason: 'off_topic_redirect' });
             }
           }
           break;
@@ -774,6 +1002,46 @@ async function connect() {
           
           if (msg.item.type === 'message' && msg.item.content && msg.item.content.length > 0) {
             const firstContent = msg.item.content[0];
+            
+            // Validate text content before allowing audio playback
+            if (firstContent.type === 'text' || firstContent.type === 'input_text') {
+              const text = firstContent.text || '';
+              const validation = validateResponse(text, currentState);
+              
+              if (!validation.valid) {
+                logGuardrail('OUTPUT', 'Response blocked - injecting canned message', { 
+                  violation: validation.violation,
+                  originalText: text.slice(0, 50)
+                });
+                
+                // Cancel the current response
+                ws!.send(JSON.stringify({
+                  type: 'response.cancel'
+                }));
+                logWebSocket('Sent', 'response.cancel', { reason: 'guardrail_violation' });
+                
+                // Inject canned response instead
+                ws!.send(JSON.stringify({
+                  type: 'conversation.item.create',
+                  item: {
+                    type: 'message',
+                    role: 'assistant',
+                    content: [{ type: 'input_text', text: validation.cannedResponse || cannedResponses.unauthorizedClaim }]
+                  }
+                }));
+                logWebSocket('Sent', 'conversation.item.create', { type: 'canned_response' });
+                
+                // Create new response with canned message
+                ws!.send(JSON.stringify({
+                  type: 'response.create'
+                }));
+                logWebSocket('Sent', 'response.create', { reason: 'canned_response' });
+                
+                // Don't play the invalid audio
+                break;
+              }
+            }
+            
             if (firstContent.type === 'output_audio' && firstContent.audio) {
               logAudio('Output item has audio, playing...');
               playAudioChunk(firstContent.audio);
