@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Dental Voice Agent - Raw WebSocket Demo</title>
+    <style>
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        height: 100vh;
+        background-color: #f4f4f9;
+        margin: 0;
+      }
+      .card {
+        background: white;
+        padding: 2rem;
+        border-radius: 12px;
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        text-align: center;
+        max-width: 500px;
+        width: 100%;
+      }
+      h1 {
+        color: #333;
+        font-size: 1.5rem;
+        margin-top: 0;
+        margin-bottom: 0.5rem;
+      }
+      p {
+        color: #666;
+        margin: 0.5rem 0 1rem 0;
+        font-size: 0.9rem;
+      }
+      button {
+        background-color: #007bff;
+        color: white;
+        border: none;
+        padding: 10px 20px;
+        font-size: 1rem;
+        border-radius: 8px;
+        cursor: pointer;
+        margin: 10px 5px;
+        transition: background-color 0.2s;
+      }
+      button:hover:not(:disabled) {
+        background-color: #0056b3;
+      }
+      button:disabled {
+        background-color: #ccc;
+        cursor: not-allowed;
+      }
+      #status {
+        margin-top: 15px;
+        font-weight: 500;
+        color: #555;
+        padding: 10px;
+        background: #f8f9fa;
+        border-radius: 6px;
+      }
+      .audio-meter {
+        margin-top: 15px;
+        height: 20px;
+        background: #eee;
+        border-radius: 10px;
+        overflow: hidden;
+      }
+      .audio-level {
+        height: 100%;
+        width: 0%;
+        background: #007bff;
+        transition: width 0.1s;
+      }
+      .info {
+        font-size: 0.8rem;
+        color: #888;
+        margin-top: 1rem;
+        padding: 0.5rem;
+        background: #fff;
+        border: 1px dashed #ccc;
+        border-radius: 4px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <h1>Dental Voice Agent</h1>
+      <p>Raw WebSocket Realtime API with State Machine</p>
+      
+      <div>
+        <button id="connectBtn">Connect</button>
+        <button id="disconnectBtn" disabled>Disconnect</button>
+      </div>
+
+      <div id="status">Disconnected</div>
+      
+      <div class="audio-meter">
+        <div id="audioLevel" class="audio-level"></div>
+      </div>
+      
+      <div class="info">
+        Open browser console (F12) to see detailed WebSocket events, 
+        state transitions, VAD events, and tool calls.
+      </div>
+    </div>
+    <script type="module" src="/src/main_sdk.ts"></script>
+  </body>
+</html>
